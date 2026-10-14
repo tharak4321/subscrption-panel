@@ -25,7 +25,17 @@ export interface AppConfig {
   telegramBotUsername: string;
   isBotConfigured: boolean;
   isSupabaseConnected: boolean;
+  databaseStatus?: 'connected' | 'schema_missing' | 'unconfigured' | 'local_dev';
+  databaseMessage?: string;
   plans: PlanConfig[];
+}
+
+export interface AuditLog {
+  id: string;
+  action: string;
+  target_user_id?: string | null;
+  details?: Record<string, any>;
+  created_at: string;
 }
 
 export interface Subscriber {

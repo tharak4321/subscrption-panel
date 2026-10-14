@@ -28,7 +28,7 @@ import {
   UserCheck,
   Image as ImageIcon,
 } from 'lucide-react';
-import { Subscriber, PaymentSubmission, PlanType, SubscriptionStatus } from '../types.js';
+import { Subscriber, PaymentSubmission, PlanType, SubscriptionStatus, AuditLog } from '../types.js';
 import { DatePickerField } from './DatePickerField.js';
 import { toYMDString } from '../lib/dateUtils.js';
 import {
@@ -51,9 +51,12 @@ import {
   fetchAppConfig,
   getTelegramUrl,
   getTelegramDisplay,
+  fetchAuditLogs,
+  checkDatabaseStatus,
 } from '../lib/api.js';
 import { InspectProofModal } from './InspectProofModal.js';
 import { CsvImportModal } from './CsvImportModal.js';
+import { SchemaViewModal } from './SchemaViewModal.js';
 
 interface AdminDashboardProps {
   onBackToPortal: () => void;
@@ -75,10 +78,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isSavingSubscriber, setIsSavingSubscriber] = useState(false);
 
   // Data states
-  const [activeTab, setActiveTab] = useState<'subscribers' | 'payments' | 'qr_config' | 'system'>('subscribers');
+  const [activeTab, setActiveTab] = useState<'subscribers' | 'payments' | 'qr_config' | 'system' | 'audit'>('subscribers');
   const [subscribers, setSubscribers] = useState<Subscriber[]>([]);
   const [payments, setPayments] = useState<PaymentSubmission[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingAudit, setIsLoadingAudit] = useState(false);
+
+  // Database Readiness states
+  const [dbStatus, setDbStatus] = useState<'connected' | 'schema_missing' | 'unconfigured' | 'local_dev'>('connected');
+  const [dbStatusMessage, setDbStatusMessage] = useState('');
+  const [isRecheckingDb, setIsRecheckingDb] = useState(false);
+  const [showSchemaModal, setShowSchemaModal] = useState(false);
 
   // QR & Payment Config states
   const [portalUpiId, setPortalUpiId] = useState('tharak4321@slc');
@@ -137,8 +148,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       // ALWAYS load the complete subscriber master list from the database
       // Client-side filtering reactively displays search and status filters without dropping records
       const [subs, pays, cfg] = await Promise.all([
-        fetchAdminSubscribers('', 'All'),
-        fetchAdminPayments(),
+        fetchAdminSubscribers('', 'All').catch((e) => {
+          console.warn('[Admin] fetchAdminSubscribers:', e.message);
+          return [] as Subscriber[];
+        }),
+        fetchAdminPayments().catch((e) => {
+          console.warn('[Admin] fetchAdminPayments:', e.message);
+          return [] as PaymentSubmission[];
+        }),
         fetchAppConfig(),
       ]);
       setSubscribers(subs);
@@ -147,10 +164,50 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setPortalPayeeName(cfg.payeeName);
       setCustomQrImage(cfg.customQrCodeUrl || null);
       setQrInstructions(cfg.qrInstructions || '');
+      if (cfg.databaseStatus) setDbStatus(cfg.databaseStatus);
+      if (cfg.databaseMessage) setDbStatusMessage(cfg.databaseMessage);
     } catch (err: any) {
       showToast(err.message || 'Failed to load admin data', 'error');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const loadAuditLogs = async () => {
+    try {
+      setIsLoadingAudit(true);
+      const logs = await fetchAuditLogs();
+      setAuditLogs(logs);
+    } catch (err: any) {
+      console.warn('[Admin] loadAuditLogs:', err.message);
+    } finally {
+      setIsLoadingAudit(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isAuthenticated && activeTab === 'audit') {
+      loadAuditLogs();
+    }
+  }, [isAuthenticated, activeTab]);
+
+  const handleRecheckDb = async () => {
+    try {
+      setIsRecheckingDb(true);
+      const res = await checkDatabaseStatus();
+      if (res.status) setDbStatus(res.status as any);
+      if (res.message) setDbStatusMessage(res.message);
+      if (res.schemaReady) {
+        showToast('Database verified! Authoritative PostgreSQL tables active.', 'success');
+        setShowSchemaModal(false);
+        loadData();
+      } else {
+        showToast(res.message || 'Database schema missing', 'error');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to check database', 'error');
+    } finally {
+      setIsRecheckingDb(false);
     }
   };
 
@@ -557,11 +614,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       </div>
 
+      {/* Live Database Status Banner if schema is missing */}
+      {dbStatus === 'schema_missing' && (
+        <div className="mb-6 p-4 rounded-2xl bg-amber-950/40 border border-amber-600/40 text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <h4 className="text-sm font-bold text-white">Database Schema Setup Required in Supabase</h4>
+              <p className="text-xs text-amber-300/90 mt-0.5">
+                Supabase project is connected, but base tables (<code className="font-mono bg-amber-950/80 px-1 py-0.5 rounded">subscribers</code>, <code className="font-mono bg-amber-950/80 px-1 py-0.5 rounded">payments</code>, etc.) do not exist in the public schema yet. Run <code className="font-mono bg-amber-950/80 px-1 py-0.5 rounded">supabase_schema.sql</code> in your Supabase SQL Editor.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setShowSchemaModal(true)}
+              className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold rounded-xl transition-colors shadow"
+            >
+              View SQL Schema
+            </button>
+            <button
+              onClick={handleRecheckDb}
+              disabled={isRecheckingDb}
+              className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold rounded-xl border border-zinc-700 transition-colors flex items-center gap-1.5"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isRecheckingDb ? 'animate-spin' : ''}`} />
+              <span>{isRecheckingDb ? 'Checking...' : 'Recheck Connection'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Tabs Navigation */}
-      <div className="flex items-center gap-2 mb-6 border-b border-zinc-800 pb-3">
+      <div className="flex items-center gap-2 mb-6 border-b border-zinc-800 pb-3 overflow-x-auto">
         <button
           onClick={() => setActiveTab('subscribers')}
-          className={`px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-colors flex items-center gap-2 ${
+          className={`px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-colors flex items-center gap-2 shrink-0 ${
             activeTab === 'subscribers'
               ? 'bg-purple-600 text-white shadow-md'
               : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
@@ -576,7 +664,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         <button
           onClick={() => setActiveTab('payments')}
-          className={`px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-colors flex items-center gap-2 ${
+          className={`px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-colors flex items-center gap-2 shrink-0 ${
             activeTab === 'payments'
               ? 'bg-purple-600 text-white shadow-md'
               : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
@@ -593,7 +681,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         <button
           onClick={() => setActiveTab('qr_config')}
-          className={`px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-colors flex items-center gap-2 ${
+          className={`px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-colors flex items-center gap-2 shrink-0 ${
             activeTab === 'qr_config'
               ? 'bg-purple-600 text-white shadow-md'
               : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
@@ -610,7 +698,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         <button
           onClick={() => setActiveTab('system')}
-          className={`px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-colors flex items-center gap-2 ${
+          className={`px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-colors flex items-center gap-2 shrink-0 ${
             activeTab === 'system'
               ? 'bg-purple-600 text-white shadow-md'
               : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
@@ -618,6 +706,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         >
           <Server className="w-4 h-4" />
           <span>Deployment & Status</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('audit')}
+          className={`px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-colors flex items-center gap-2 shrink-0 ${
+            activeTab === 'audit'
+              ? 'bg-purple-600 text-white shadow-md'
+              : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
+          }`}
+        >
+          <Shield className="w-4 h-4" />
+          <span>Audit Logs</span>
         </button>
       </div>
 
@@ -1223,6 +1323,74 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* TAB 5: AUDIT LOGS */}
+      {activeTab === 'audit' && (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl space-y-5">
+          <div className="flex items-center justify-between pb-4 border-b border-zinc-800">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Shield className="w-4 h-4 text-purple-400" />
+                <span>Authoritative Audit Logs (public.audit_logs)</span>
+              </h3>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                Cryptographically tracked system operations, status changes, and payment approvals.
+              </p>
+            </div>
+            <button
+              onClick={loadAuditLogs}
+              disabled={isLoadingAudit}
+              className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-xl border border-zinc-700 flex items-center gap-1.5 transition-colors"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingAudit ? 'animate-spin' : ''}`} />
+              <span>Refresh Logs</span>
+            </button>
+          </div>
+
+          {isLoadingAudit ? (
+            <div className="py-12 flex flex-col items-center justify-center gap-2">
+              <div className="w-6 h-6 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-xs text-zinc-400">Loading audit records...</span>
+            </div>
+          ) : auditLogs.length === 0 ? (
+            <div className="py-12 text-center text-zinc-500 text-xs">
+              No audit log entries recorded yet. Database operations will appear here in real time.
+            </div>
+          ) : (
+            <div className="divide-y divide-zinc-800 font-mono text-xs max-h-[60vh] overflow-y-auto">
+              {auditLogs.map((log) => (
+                <div key={log.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20 text-[10px] font-bold">
+                      {log.action}
+                    </span>
+                    {log.target_user_id && (
+                      <span className="text-zinc-300">Target: <strong className="text-white">{log.target_user_id}</strong></span>
+                    )}
+                    {log.details && Object.keys(log.details).length > 0 && (
+                      <span className="text-zinc-500 text-[11px] truncate max-w-xs">
+                        {JSON.stringify(log.details)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-zinc-500 shrink-0">
+                    {new Date(log.created_at).toLocaleString('en-IN', { timeZone: 'UTC' })} UTC
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* SCHEMA VIEW & RECHECK MODAL */}
+      {showSchemaModal && (
+        <SchemaViewModal
+          onClose={() => setShowSchemaModal(false)}
+          onRecheck={handleRecheckDb}
+          isRechecking={isRecheckingDb}
+        />
       )}
 
       {/* INSPECT PROOF MODAL */}

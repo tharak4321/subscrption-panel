@@ -67,3 +67,11 @@ export interface PortalSettings {
   updatedAt?: string;
 }
 
+export interface AuditLog {
+  id: string;
+  action: string;
+  target_user_id?: string | null;
+  details?: Record<string, any>;
+  created_at: string;
+}
+

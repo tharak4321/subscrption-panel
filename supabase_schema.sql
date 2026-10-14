@@ -75,24 +75,29 @@ ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.portal_settings ENABLE ROW LEVEL SECURITY;
 
 -- Service Role (Backend Server) has full access
+DROP POLICY IF EXISTS "Service role full access subscribers" ON public.subscribers;
 CREATE POLICY "Service role full access subscribers" ON public.subscribers
     FOR ALL USING (auth.role() = 'service_role');
 
+DROP POLICY IF EXISTS "Service role full access payments" ON public.payments;
 CREATE POLICY "Service role full access payments" ON public.payments
     FOR ALL USING (auth.role() = 'service_role');
 
+DROP POLICY IF EXISTS "Service role full access audit_logs" ON public.audit_logs;
 CREATE POLICY "Service role full access audit_logs" ON public.audit_logs
     FOR ALL USING (auth.role() = 'service_role');
 
+DROP POLICY IF EXISTS "Service role full access portal_settings" ON public.portal_settings;
 CREATE POLICY "Service role full access portal_settings" ON public.portal_settings
     FOR ALL USING (auth.role() = 'service_role');
 
--- 5. Private Storage Bucket Setup for Payment Proofs
+-- 6. Private Storage Bucket Setup for Payment Proofs
 -- Create bucket 'payment-proofs' if using Supabase Storage
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('payment-proofs', 'payment-proofs', false)
 ON CONFLICT (id) DO UPDATE SET public = false;
 
 -- Private storage policy: Only service role can read/write payment screenshots
+DROP POLICY IF EXISTS "Service role manages payment proofs" ON storage.objects;
 CREATE POLICY "Service role manages payment proofs" ON storage.objects
     FOR ALL USING (bucket_id = 'payment-proofs' AND auth.role() = 'service_role');

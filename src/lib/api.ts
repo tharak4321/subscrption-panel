@@ -332,4 +332,28 @@ export async function activateAdminSubscriber(
   return data;
 }
 
+export async function fetchAuditLogs(): Promise<any[]> {
+  const token = getAdminToken();
+  const res = await fetch('/api/admin/audit-logs', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to fetch audit logs');
+  return data.audit_logs || [];
+}
+
+export async function checkDatabaseStatus(): Promise<{
+  status: string;
+  message: string;
+  schemaReady: boolean;
+  ready: boolean;
+  error?: string;
+}> {
+  const token = getAdminToken();
+  const res = await fetch('/api/admin/db/status', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return res.json();
+}
+
 

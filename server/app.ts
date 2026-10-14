@@ -57,12 +57,41 @@ function saveAdminSessions(set: Set<string>): void {
 
 const activeAdminTokens = loadAdminSessions();
 
+function generateAdminToken(): string {
+  const payload = `${Date.now()}_${crypto.randomBytes(16).toString('hex')}`;
+  const signature = crypto.createHmac('sha256', ADMIN_PASSWORD).update(payload).digest('hex');
+  return `${payload}.${signature}`;
+}
+
+function isValidAdminToken(token: string): boolean {
+  if (!token || typeof token !== 'string') return false;
+  const clean = token.trim();
+  if (activeAdminTokens.has(clean)) return true;
+
+  // Verify HMAC signature to survive restarts
+  const parts = clean.split('.');
+  if (parts.length === 2) {
+    const [payload, sig] = parts;
+    const expectedSig = crypto.createHmac('sha256', ADMIN_PASSWORD).update(payload).digest('hex');
+    if (sig === expectedSig) {
+      const ts = parseInt(payload.split('_')[0], 10);
+      // Valid for 14 days
+      if (!isNaN(ts) && Date.now() - ts < 14 * 86400000) {
+        activeAdminTokens.add(clean);
+        saveAdminSessions(activeAdminTokens);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Admin Auth Middleware
 function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
   const token = (authHeader?.replace(/^Bearer\s+/i, '').trim()) || (req.query.token as string)?.trim();
 
-  if (!token || !activeAdminTokens.has(token)) {
+  if (!token || !isValidAdminToken(token)) {
     res.status(401).json({ error: 'Unauthorized: Admin authentication required.' });
     return;
   }
@@ -85,6 +114,8 @@ app.get('/api/config', async (_req: Request, res: Response) => {
     telegramBotUsername: TELEGRAM_BOT_USERNAME,
     isBotConfigured: Boolean(TELEGRAM_BOT_TOKEN && TELEGRAM_BOT_TOKEN.trim().length > 0),
     isSupabaseConnected: db.isUsingSupabase,
+    databaseStatus: db.databaseStatus,
+    databaseMessage: db.databaseStatusMessage,
     plans: [
       {
         id: 'Normal',
@@ -310,7 +341,7 @@ app.post('/api/admin/login', (req: Request, res: Response) => {
 
   const validPassword = (process.env.ADMIN_PASSWORD && process.env.ADMIN_PASSWORD.trim()) || 'admin123';
   if (password.trim() === validPassword || password.trim() === 'admin123') {
-    const token = crypto.randomBytes(32).toString('hex');
+    const token = generateAdminToken();
     activeAdminTokens.add(token);
     saveAdminSessions(activeAdminTokens);
     return res.json({
@@ -328,10 +359,31 @@ app.get('/api/admin/check', (req: Request, res: Response) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
 
-  if (token && activeAdminTokens.has(token)) {
+  if (token && isValidAdminToken(token)) {
     return res.json({ authenticated: true });
   }
   return res.status(401).json({ authenticated: false });
+});
+
+// Admin Audit Logs
+app.get('/api/admin/audit-logs', requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const logs = await db.getAuditLogs();
+    return res.json({ audit_logs: logs });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Live Database Status Check
+app.get('/api/admin/db/status', requireAdmin, async (_req: Request, res: Response) => {
+  const result = await db.checkSchemaReadiness();
+  return res.json({
+    status: db.databaseStatus,
+    message: db.databaseStatusMessage,
+    schemaReady: db.schemaReady,
+    ...result,
+  });
 });
 
 // Admin Logout
