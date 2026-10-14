@@ -1,0 +1,6 @@
+{
+  "name": "Actorsparadise Subscription Portal",
+  "description": "Mobile-friendly subscription management portal for Actorsparadise with Telegram authentication, UPI payments, and admin verification dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
